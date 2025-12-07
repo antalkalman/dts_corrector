@@ -40,23 +40,41 @@ if sf_file and ts_files:
 
                     str_val = str(value).strip()
 
-                    # Format 1: YYYYMMDD (e.g. 20250619)
+                    # Format 1: YYYYMMDD
                     if re.fullmatch(r"20\d{6}", str_val):
                         try:
                             return datetime.strptime(str_val, "%Y%m%d")
                         except:
                             return date_from_filename
 
-                    # Format 2: YYMMDD (e.g. 250619 → 2025-06-19)
+                    # Format 2: YYMMDD
                     if re.fullmatch(r"\d{6}", str_val):
                         try:
                             return datetime.strptime(str_val, "%y%m%d")
                         except:
                             return date_from_filename
 
-                    # Format 3: try anything else (e.g. 19.06.2025)
+                    # Format 3: DD.MM or DD.MM. or DD.MM.YY or DD.MM.YYYY
+                    if re.fullmatch(r"\d{1,2}[./]\d{1,2}([./]\d{2,4})?", str_val):
+                        try:
+                            parts = re.split(r"[./]", str_val)
+                            day = int(parts[0])
+                            month = int(parts[1])
+                            if len(parts) >= 3:
+                                year_part = parts[2]
+                                if len(year_part) == 2:
+                                    year = int("20" + year_part)
+                                else:
+                                    year = int(year_part)
+                            else:
+                                year = (date_from_filename or datetime.today()).year
+                            return datetime(year, month, day)
+                        except:
+                            return date_from_filename
+
+                    # Format 4: MM/DD/YY or MM/DD/YYYY (U.S. style, month-first)
                     try:
-                        parsed = pd.to_datetime(str_val, dayfirst=True, errors="coerce")
+                        parsed = pd.to_datetime(str_val, dayfirst=False, errors="coerce")
                         return parsed if pd.notna(parsed) else date_from_filename
                     except:
                         return date_from_filename
@@ -69,10 +87,37 @@ if sf_file and ts_files:
                 return df
 
 
-            # === Load SF list ===
-            df_sf = pd.read_csv(sf_file)
-            assert all(col in df_sf.columns for col in ["Crew list name", "Project job title", "Sf number"])
+            # === Load SF list (handle multiple formats) ===
+            df_sf_raw = pd.read_csv(sf_file)
+
+            # Try mapping known field variations
+            column_map_options = [
+                {
+                    "Crew list name": "Crew list name",
+                    "Project job title": "Project job title",
+                    "Sf number": "Sf number"
+                },
+                {
+                    "Crew list name": "Crew_list_name",
+                    "Project job title": "Job_title",
+                    "Sf number": "Sf_number"
+                }
+            ]
+
+            mapped = False
+            for col_map in column_map_options:
+                if all(col in df_sf_raw.columns for col in col_map.values()):
+                    df_sf = df_sf_raw.rename(columns={v: k for k, v in col_map.items()})
+                    mapped = True
+                    break
+
+            if not mapped:
+                st.error("❌ Could not recognize the column names in the uploaded SF list.")
+                st.stop()
+
+            # Now these columns are guaranteed to exist: Crew list name, Project job title, Sf number
             sf_pairs = list(zip(df_sf["Crew list name"], df_sf["Project job title"], df_sf["Sf number"]))
+
 
             # === DTS Loader ===
             def load_dts_with_header_by_datum(file):
